@@ -56,6 +56,19 @@ STORAGE=$(whiptail --title "$TITLE" --menu "Storage:" 14 60 5 "${STORAGES[@]}" 3
 mapfile -t BRIDGES < <(ip -o link show type bridge | awk -F': ' '{print $2; print "Bridge"}')
 BRIDGE=$(whiptail --title "$TITLE" --menu "Network bridge:" 13 50 4 "${BRIDGES[@]}" 3>&1 1>&2 2>&3) || cancel
 
+# USB passthrough (e.g. Zigbee/Z-Wave/Thread stick) - optional
+# Lists all USB devices except internal root hubs (vendor 1d6b)
+USB_SELECTED=()
+mapfile -t USB_LIST < <(lsusb 2>/dev/null \
+  | awk '$6 !~ /^1d6b:/ {id=$6; $1=$2=$3=$4=$5=$6=""; sub(/^ +/,""); print id; print substr($0,1,40); print "OFF"}')
+if [[ ${#USB_LIST[@]} -gt 0 ]]; then
+  USB_CHOICE=$(whiptail --title "$TITLE" --checklist \
+    "USB devices to pass through to the VM (SPACE = select, ENTER = confirm):" \
+    18 70 8 "${USB_LIST[@]}" 3>&1 1>&2 2>&3) || cancel
+  read -r -a USB_SELECTED <<< "$(tr -d '"' <<< "$USB_CHOICE")"
+fi
+USB_TEXT="${USB_SELECTED[*]:-none}"
+
 START="no"
 whiptail --title "$TITLE" --yesno "Start the VM right after installation?" 8 50 && START="yes"
 
@@ -69,9 +82,10 @@ whiptail --title "$TITLE" --yesno "Please review:
   Memory       : $RAM MB
   Disk         : $DISK GB on $STORAGE
   Network      : $BRIDGE
+  USB devices  : $USB_TEXT
   Auto start   : $START
 
-Install now?" 20 55 || cancel
+Install now?" 21 60 || cancel
 
 # --- Download ------------------------------------------------
 TMPDIR_HAOS=$(mktemp -d)
@@ -111,6 +125,14 @@ qm set "$VMID" --scsi0 "${STORAGE}:0,import-from=${IMG},discard=on,ssd=1" >/dev/
 qm resize "$VMID" scsi0 "${DISK}G" >/dev/null
 qm set "$VMID" --boot order=scsi0 >/dev/null
 info "System disk imported and resized to ${DISK} GB"
+
+# Attach selected USB devices by vendor:product ID (works on any USB port)
+i=0
+for dev in "${USB_SELECTED[@]}"; do
+  qm set "$VMID" --usb$i "host=$dev" >/dev/null
+  info "USB device $dev passed through as usb$i"
+  i=$((i+1))
+done
 
 # --- Start ---------------------------------------------------
 if [[ "$START" == "yes" ]]; then
