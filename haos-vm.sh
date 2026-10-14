@@ -21,8 +21,10 @@ command -v qm >/dev/null || fehler "Kein Proxmox-Host (qm nicht gefunden)."
 command -v whiptail >/dev/null || apt-get install -y whiptail >/dev/null
 
 # --- Aktuelle HAOS-Version holen -----------------------------
-HAOS_VER=$(curl -fsSL https://api.github.com/repos/home-assistant/operating-system/releases/latest \
-  | grep -m1 '"tag_name"' | cut -d'"' -f4) || fehler "Konnte HAOS-Version nicht ermitteln (Internet?)."
+RELEASE_JSON=$(curl -fsSL https://api.github.com/repos/home-assistant/operating-system/releases/latest) \
+  || fehler "Konnte GitHub-API nicht erreichen (Internet?)."
+HAOS_VER=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' <<< "$RELEASE_JSON")
+[[ -n "$HAOS_VER" ]] || fehler "HAOS-Version nicht in der Antwort gefunden."
 
 # --- Abfragen ------------------------------------------------
 NEXTID=$(pvesh get /cluster/nextid)
