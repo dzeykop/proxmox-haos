@@ -98,7 +98,7 @@ qm create "$VMID" \
   --agent enabled=1 \
   --tablet 0 \
   --onboot 1 \
-  --description "Home Assistant OS $HAOS_VER – erstellt mit haos-vm.sh"
+  --description "Home Assistant OS $HAOS_VER – erstellt mit haos-vm.sh from JFFK"
 info "VM $VMID angelegt"
 
 # EFI-Disk (Secure Boot AUS – sonst bootet HAOS nicht)
