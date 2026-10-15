@@ -2,10 +2,23 @@
 # =============================================================
 #  Home Assistant OS VM - interactive installer for Proxmox VE
 #  Run as root on the Proxmox host.
+#  Author: JFFK
+#
+#  Version: 1.0
+#  Changelog:
+#    1.0 - Hardware detection (CPU/RAM/disk) + warnings when the
+#          selection exceeds available resources.
+#          Earlier unnumbered milestones: English UI, USB
+#          passthrough, active-storage filter, HAOS version fix.
+#
+#  Versioning scheme:
+#    small fixes      -> raise the minor number (1.1, 1.2, ...)
+#    big new features -> raise the major number (2.0, 3.0, ...)
 # =============================================================
 set -euo pipefail
 
-TITLE="Home Assistant OS - VM Installer"
+VERSION="1.0"
+TITLE="Home Assistant OS - VM Installer v$VERSION"
 TMPDIR_HAOS=""
 
 cleanup() { [[ -n "$TMPDIR_HAOS" && -d "$TMPDIR_HAOS" ]] && rm -rf "$TMPDIR_HAOS"; }
@@ -19,6 +32,11 @@ info()   { echo -e "\e[32m[OK]\e[0m $1"; }
 [[ $EUID -eq 0 ]] || error "Please run as root."
 command -v qm >/dev/null || error "This is not a Proxmox host (qm not found)."
 command -v whiptail >/dev/null || apt-get install -y whiptail >/dev/null
+
+# --- Read host resources -------------------------------------
+HOST_CORES=$(nproc)
+MEM_TOTAL_MB=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo)
+MEM_AVAIL_MB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024}' /proc/meminfo)
 
 # --- Get latest HAOS version ---------------------------------
 RELEASE_JSON=$(curl -fsSL https://api.github.com/repos/home-assistant/operating-system/releases/latest) \
@@ -34,11 +52,11 @@ qm status "$VMID" &>/dev/null && error "VM ID $VMID already exists."
 
 VMNAME=$(whiptail --title "$TITLE" --inputbox "VM name:" 8 50 "homeassistant" 3>&1 1>&2 2>&3) || cancel
 
-CORES=$(whiptail --title "$TITLE" --menu "CPU cores:" 13 50 4 \
+CORES=$(whiptail --title "$TITLE" --menu "CPU cores\nThis host has $HOST_CORES cores." 14 50 4 \
   "2" "Default (recommended)" "4" "Many add-ons" "1" "Minimal" "6" "Large" \
   3>&1 1>&2 2>&3) || cancel
 
-RAM=$(whiptail --title "$TITLE" --menu "Memory (MB):" 13 50 4 \
+RAM=$(whiptail --title "$TITLE" --menu "Memory (MB)\nInstalled: $MEM_TOTAL_MB MB, available: $MEM_AVAIL_MB MB" 14 60 4 \
   "4096" "4 GB (recommended)" "2048" "2 GB (minimum)" "8192" "8 GB" "16384" "16 GB" \
   3>&1 1>&2 2>&3) || cancel
 
@@ -51,6 +69,7 @@ mapfile -t STORAGES < <(pvesm status -content images 2>/dev/null \
   | awk 'NR>1 && $3=="active" {print $1; printf "%s (%.0f GB free)\n", $2, $6/1024/1024}')
 [[ ${#STORAGES[@]} -gt 0 ]] || error "No active storage for VM disks found."
 STORAGE=$(whiptail --title "$TITLE" --menu "Storage:" 14 60 5 "${STORAGES[@]}" 3>&1 1>&2 2>&3) || cancel
+STORAGE_FREE_GB=$(pvesm status -storage "$STORAGE" 2>/dev/null | awk 'NR>1 {printf "%d", $6/1024/1024}')
 
 # Network bridge
 mapfile -t BRIDGES < <(ip -o link show type bridge | awk -F': ' '{print $2; print "Bridge"}')
@@ -71,6 +90,22 @@ USB_TEXT="${USB_SELECTED[*]:-none}"
 
 START="no"
 whiptail --title "$TITLE" --yesno "Start the VM right after installation?" 8 50 && START="yes"
+
+# --- Resource check (warn, but let the user decide) ----------
+WARNINGS=""
+if (( CORES > HOST_CORES )); then
+  WARNINGS+="- CPU: you selected $CORES cores, but the host has only $HOST_CORES.\n"
+fi
+if (( RAM > MEM_AVAIL_MB )); then
+  WARNINGS+="- Memory: you selected $RAM MB, but only $MEM_AVAIL_MB MB is available ($MEM_TOTAL_MB MB installed).\n"
+fi
+if [[ -n "${STORAGE_FREE_GB:-}" ]] && (( DISK > STORAGE_FREE_GB )); then
+  WARNINGS+="- Disk: you selected $DISK GB, but only $STORAGE_FREE_GB GB is free on $STORAGE.\n"
+fi
+if [[ -n "$WARNINGS" ]]; then
+  whiptail --title "$TITLE - WARNING" --yesno --defaultno \
+    "Your selection exceeds the available resources:\n\n${WARNINGS}\nContinue anyway?" 16 70 || cancel
+fi
 
 # --- Summary -------------------------------------------------
 whiptail --title "$TITLE" --yesno "Please review:
