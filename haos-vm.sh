@@ -4,8 +4,9 @@
 #  Run as root on the Proxmox host.
 #  Author: JFFK
 #
-#  Version: 1.1
+#  Version: 1.2
 #  Changelog:
+#    1.2 - Default VM name changed to "HA-OS".
 #    1.1 - "Custom..." option for CPU, RAM and disk with input
 #          validation; warning when RAM is below 2048 MB.
 #    1.0 - Hardware detection (CPU/RAM/disk) + warnings when the
@@ -19,7 +20,7 @@
 # =============================================================
 set -euo pipefail
 
-VERSION="1.1"
+VERSION="1.2"
 TITLE="Home Assistant OS - VM Installer v$VERSION"
 TMPDIR_HAOS=""
 
@@ -66,7 +67,7 @@ NEXTID=$(pvesh get /cluster/nextid)
 VMID=$(whiptail --title "$TITLE" --inputbox "VM ID:" 8 50 "$NEXTID" 3>&1 1>&2 2>&3) || cancel
 qm status "$VMID" &>/dev/null && error "VM ID $VMID already exists."
 
-VMNAME=$(whiptail --title "$TITLE" --inputbox "VM name:" 8 50 "homeassistant" 3>&1 1>&2 2>&3) || cancel
+VMNAME=$(whiptail --title "$TITLE" --inputbox "VM name:" 8 50 "HA-OS" 3>&1 1>&2 2>&3) || cancel
 
 CORES=$(whiptail --title "$TITLE" --menu "CPU cores\nThis host has $HOST_CORES cores." 14 50 4 \
   "2" "Default (recommended)" "4" "Many add-ons" "1" "Minimal" "6" "Large" "C" "Custom..." \
