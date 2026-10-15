@@ -4,8 +4,10 @@
 #  Run as root on the Proxmox host.
 #  Author: JFFK
 #
-#  Version: 1.0
+#  Version: 1.1
 #  Changelog:
+#    1.1 - "Custom..." option for CPU, RAM and disk with input
+#          validation; warning when RAM is below 2048 MB.
 #    1.0 - Hardware detection (CPU/RAM/disk) + warnings when the
 #          selection exceeds available resources.
 #          Earlier unnumbered milestones: English UI, USB
@@ -17,7 +19,7 @@
 # =============================================================
 set -euo pipefail
 
-VERSION="1.0"
+VERSION="1.1"
 TITLE="Home Assistant OS - VM Installer v$VERSION"
 TMPDIR_HAOS=""
 
@@ -27,6 +29,20 @@ trap cleanup EXIT
 cancel() { whiptail --title "$TITLE" --msgbox "Cancelled. Nothing was changed." 8 50; exit 1; }
 error()  { echo -e "\n\e[31m[ERROR]\e[0m $1"; exit 1; }
 info()   { echo -e "\e[32m[OK]\e[0m $1"; }
+
+# Ask for a whole number until the input is valid.
+# Usage: ask_number <VARIABLE> "<prompt>" <default> <minimum>
+ask_number() {
+  local val
+  while true; do
+    val=$(whiptail --title "$TITLE" --inputbox "$2" 10 60 "$3" 3>&1 1>&2 2>&3) || cancel
+    if [[ "$val" =~ ^[1-9][0-9]*$ ]] && (( val >= $4 )); then
+      printf -v "$1" '%s' "$val"
+      return
+    fi
+    whiptail --title "$TITLE" --msgbox "Invalid input: '$val'\n\nPlease enter a whole number of at least $4." 10 60
+  done
+}
 
 # --- Pre-checks ----------------------------------------------
 [[ $EUID -eq 0 ]] || error "Please run as root."
@@ -53,16 +69,26 @@ qm status "$VMID" &>/dev/null && error "VM ID $VMID already exists."
 VMNAME=$(whiptail --title "$TITLE" --inputbox "VM name:" 8 50 "homeassistant" 3>&1 1>&2 2>&3) || cancel
 
 CORES=$(whiptail --title "$TITLE" --menu "CPU cores\nThis host has $HOST_CORES cores." 14 50 4 \
-  "2" "Default (recommended)" "4" "Many add-ons" "1" "Minimal" "6" "Large" \
+  "2" "Default (recommended)" "4" "Many add-ons" "1" "Minimal" "6" "Large" "C" "Custom..." \
   3>&1 1>&2 2>&3) || cancel
+if [[ "$CORES" == "C" ]]; then
+  ask_number CORES "Number of CPU cores (this host has $HOST_CORES):" 2 1
+fi
 
-RAM=$(whiptail --title "$TITLE" --menu "Memory (MB)\nInstalled: $MEM_TOTAL_MB MB, available: $MEM_AVAIL_MB MB" 14 60 4 \
-  "4096" "4 GB (recommended)" "2048" "2 GB (minimum)" "8192" "8 GB" "16384" "16 GB" \
+RAM=$(whiptail --title "$TITLE" --menu "Memory (MB)\nInstalled: $MEM_TOTAL_MB MB, available: $MEM_AVAIL_MB MB" 15 60 5 \
+  "4096" "4 GB (recommended)" "2048" "2 GB (minimum)" "8192" "8 GB" "16384" "16 GB" "C" "Custom..." \
   3>&1 1>&2 2>&3) || cancel
+if [[ "$RAM" == "C" ]]; then
+  ask_number RAM "Memory in MB (1 GB = 1024 MB)\nInstalled: $MEM_TOTAL_MB MB, available: $MEM_AVAIL_MB MB" 4096 512
+fi
 
-DISK=$(whiptail --title "$TITLE" --menu "Disk size (GB):" 13 50 4 \
-  "32" "32 GB (default)" "64" "64 GB (more history/backups)" "128" "128 GB" "48" "48 GB" \
+# Minimum 32 GB: the HAOS image is 32 GB and a disk cannot be shrunk
+DISK=$(whiptail --title "$TITLE" --menu "Disk size (GB):" 14 50 5 \
+  "32" "32 GB (default)" "64" "64 GB (more history/backups)" "128" "128 GB" "48" "48 GB" "C" "Custom..." \
   3>&1 1>&2 2>&3) || cancel
+if [[ "$DISK" == "C" ]]; then
+  ask_number DISK "Disk size in GB (minimum 32):" 32 32
+fi
 
 # Storage list read from Proxmox - only active storages, with free space
 mapfile -t STORAGES < <(pvesm status -content images 2>/dev/null \
@@ -98,6 +124,9 @@ if (( CORES > HOST_CORES )); then
 fi
 if (( RAM > MEM_AVAIL_MB )); then
   WARNINGS+="- Memory: you selected $RAM MB, but only $MEM_AVAIL_MB MB is available ($MEM_TOTAL_MB MB installed).\n"
+fi
+if (( RAM < 2048 )); then
+  WARNINGS+="- Memory: $RAM MB is below the Home Assistant minimum of 2048 MB.\n"
 fi
 if [[ -n "${STORAGE_FREE_GB:-}" ]] && (( DISK > STORAGE_FREE_GB )); then
   WARNINGS+="- Disk: you selected $DISK GB, but only $STORAGE_FREE_GB GB is free on $STORAGE.\n"
