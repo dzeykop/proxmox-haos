@@ -4,7 +4,7 @@ One-command installer for a **Home Assistant OS** virtual machine on **Proxmox V
 
 Run one command on your Proxmox host, pick your settings in simple menus, and the script does the rest: it downloads the latest Home Assistant OS image, creates the VM and starts it.
 
-**Current version: 1.2**
+**Current version: 1.3**
 
 ## Quick start
 
@@ -14,10 +14,8 @@ Log in to your Proxmox host as `root` (SSH is recommended, e.g. from a Mac or Li
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-haos/main/haos-vm.sh)"
 ```
 
-After 5–10 minutes Home Assistant is reachable at:
-
-- `http://homeassistant.local:8123`, or
-- `http://<VM-IP>:8123` (the IP is shown in Proxmox under the VM → Summary, or in your router)
+When the VM is started, the script waits for Home Assistant and prints the address to open, e.g. `http://192.168.1.50:8123`.
+You can also use `http://homeassistant.local:8123`.
 
 ## Requirements
 
@@ -34,8 +32,9 @@ After 5–10 minutes Home Assistant is reachable at:
 5. Warns you if your selection exceeds the available resources
 6. Shows a summary – nothing is changed until you confirm
 7. Downloads the image, creates the VM and starts it (optional)
+8. Waits until Home Assistant answers on port 8123 and shows its real IP address (up to 10 minutes)
 
-Temporary files are removed automatically when the script ends.
+Temporary files are removed automatically when the script ends. If the installation fails half-way (e.g. a broken download or Ctrl+C), the unfinished VM is removed automatically. An existing or fully installed VM is never deleted.
 
 ## Settings you can choose
 
@@ -70,12 +69,15 @@ The VM is created with: q35 machine, UEFI (OVMF) with Secure Boot disabled, CPU 
 | `Could not reach the GitHub API` | Check internet and DNS on the Proxmox host, e.g. `ping github.com` |
 | `VM ID ... already exists` | Choose another ID or delete the old VM |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` (SSH) | Run `ssh-keygen -R <IP>` on your computer and connect again |
-| `homeassistant.local:8123` does not load | Wait up to 10 minutes on first boot, then try the VM's IP address |
+| `homeassistant.local:8123` does not load | Wait up to 10 minutes on first boot, then use the IP address shown by the script |
+| `[NOTE] Could not detect the IP address` | Home Assistant is still booting – find the IP in Proxmox under VM → Summary or in your router |
+| `[ROLLBACK] ... removing unfinished VM` | The installation failed and was cleaned up – fix the error shown above and run the command again |
 
 ## Changelog
 
 | Version | Changes |
 | --- | --- |
+| 1.3 | Automatic rollback of an unfinished VM on failure; reachability check on port 8123 with automatic IP detection |
 | 1.2 | Default VM name changed to `HA-OS` |
 | 1.1 | "Custom..." input for CPU, memory and disk with validation; warning when memory is below 2048 MB |
 | 1.0 | Hardware detection (CPU/memory/disk) and warnings when the selection exceeds available resources |
