@@ -4,8 +4,11 @@
 #  Run as root on the Proxmox host.
 #  Author: JFFK
 #
-#  Version: 1.2
+#  Version: 1.3
 #  Changelog:
+#    1.3 - Automatic rollback: a half-created VM is removed if the
+#          script fails. Reachability check: waits for Home
+#          Assistant on port 8123 and shows the real IP address.
 #    1.2 - Default VM name changed to "HA-OS".
 #    1.1 - "Custom..." option for CPU, RAM and disk with input
 #          validation; warning when RAM is below 2048 MB.
@@ -20,12 +23,31 @@
 # =============================================================
 set -euo pipefail
 
-VERSION="1.2"
+VERSION="1.3"
 TITLE="Home Assistant OS - VM Installer v$VERSION"
 TMPDIR_HAOS=""
+VMID=""
+VM_CREATED=0     # set to 1 right after "qm create" succeeded
+INSTALL_DONE=0   # set to 1 when the VM is fully configured
 
-cleanup() { [[ -n "$TMPDIR_HAOS" && -d "$TMPDIR_HAOS" ]] && rm -rf "$TMPDIR_HAOS"; }
+# Runs on every exit: removes temp files and, if the script failed
+# half-way, the unfinished VM. A finished VM is never touched.
+cleanup() {
+  local rc=$?
+  if [[ "$VM_CREATED" -eq 1 && "$INSTALL_DONE" -eq 0 && -n "$VMID" ]]; then
+    echo -e "\n\e[33m[ROLLBACK]\e[0m Installation did not finish - removing unfinished VM $VMID ..."
+    qm stop "$VMID" &>/dev/null || true
+    if qm destroy "$VMID" --purge &>/dev/null; then
+      echo -e "\e[33m[ROLLBACK]\e[0m VM $VMID removed. Nothing is left behind."
+    else
+      echo -e "\e[31m[ROLLBACK]\e[0m Could not remove VM $VMID - please delete it manually in Proxmox."
+    fi
+  fi
+  [[ -n "$TMPDIR_HAOS" && -d "$TMPDIR_HAOS" ]] && rm -rf "$TMPDIR_HAOS"
+  exit "$rc"
+}
 trap cleanup EXIT
+trap 'exit 130' INT TERM   # Ctrl+C also triggers the cleanup above
 
 cancel() { whiptail --title "$TITLE" --msgbox "Cancelled. Nothing was changed." 8 50; exit 1; }
 error()  { echo -e "\n\e[31m[ERROR]\e[0m $1"; exit 1; }
@@ -179,6 +201,7 @@ qm create "$VMID" \
   --tablet 0 \
   --onboot 1 \
   --description "Home Assistant OS $HAOS_VER - created with haos-vm.sh from JFFK"
+VM_CREATED=1
 info "VM $VMID created"
 
 # EFI disk (Secure Boot OFF - otherwise HAOS will not boot)
@@ -199,13 +222,70 @@ for dev in "${USB_SELECTED[@]}"; do
   i=$((i+1))
 done
 
+# VM is fully configured - from here on it is never rolled back
+INSTALL_DONE=1
+
 # --- Start ---------------------------------------------------
-if [[ "$START" == "yes" ]]; then
-  qm start "$VMID"
-  info "VM started"
+if [[ "$START" != "yes" ]]; then
+  echo
+  info "Done! VM $VMID is ready but not started."
+  echo "     Start it in Proxmox, then open http://homeassistant.local:8123"
+  exit 0
 fi
 
+qm start "$VMID" || {
+  echo -e "\n\e[33m[NOTE]\e[0m VM $VMID is installed but could not be started."
+  echo "     Check the VM settings (e.g. memory) in Proxmox and start it there."
+  exit 0
+}
+info "VM started"
+
+# --- Reachability check --------------------------------------
+# 1) Get the VM's IP via the QEMU guest agent (built into HAOS).
+#    Internal Docker/Supervisor networks (172.30.x, 172.17.x) are skipped.
+# 2) Wait until Home Assistant answers on port 8123.
+WAIT_MAX=600      # seconds (10 minutes)
+VM_IP=""
+DEADLINE=$((SECONDS + WAIT_MAX))
+
+echo "Waiting for the VM to report its IP address (up to $((WAIT_MAX/60)) min) ..."
+while (( SECONDS < DEADLINE )); do
+  VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
+    | grep -oE '"ip-address" *: *"[0-9]+(\.[0-9]+){3}"' \
+    | grep -oE '[0-9]+(\.[0-9]+){3}' \
+    | grep -vE '^(127\.|172\.30\.|172\.17\.|169\.254\.)' \
+    | head -n1 || true)
+  [[ -n "$VM_IP" ]] && break
+  printf "."
+  sleep 5
+done
 echo
-info "Done! Home Assistant will be reachable in about 5-10 minutes at:"
-echo "     http://homeassistant.local:8123  (or http://<VM-IP>:8123)"
-echo "     Find the IP in Proxmox under VM $VMID > Summary or in your router."
+
+if [[ -z "$VM_IP" ]]; then
+  echo -e "\e[33m[NOTE]\e[0m Could not detect the IP address automatically."
+  echo "     Home Assistant is still starting. Try http://homeassistant.local:8123"
+  echo "     or look up the IP in Proxmox under VM $VMID > Summary or in your router."
+  exit 0
+fi
+info "VM IP address: $VM_IP"
+
+echo "Waiting for Home Assistant on http://$VM_IP:8123 ..."
+HA_UP=0
+while (( SECONDS < DEADLINE )); do
+  HTTP_CODE=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$VM_IP:8123" || true)
+  if [[ -n "$HTTP_CODE" && "$HTTP_CODE" != "000" ]]; then
+    HA_UP=1
+    break
+  fi
+  printf "."
+  sleep 5
+done
+echo
+
+if [[ "$HA_UP" -eq 1 ]]; then
+  info "Done! Home Assistant is up and running:"
+  echo "     http://$VM_IP:8123   (or http://homeassistant.local:8123)"
+else
+  echo -e "\e[33m[NOTE]\e[0m Home Assistant is not answering yet - the first boot can take longer."
+  echo "     Try again in a few minutes: http://$VM_IP:8123"
+fi
